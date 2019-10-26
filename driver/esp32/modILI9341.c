@@ -150,6 +150,7 @@ STATIC void disp_spi_init(ILI9341_t *self)
 {
 	esp_err_t ret;
 
+#if 0
 	spi_bus_config_t buscfg={
 		.miso_io_num=self->miso,
 		.mosi_io_num=self->mosi,
@@ -158,6 +159,7 @@ STATIC void disp_spi_init(ILI9341_t *self)
 		.quadhd_io_num=-1,
 		.max_transfer_sz=128*1024,
 	};
+#endif	
 
 	spi_device_interface_config_t devcfg={
 		.clock_speed_hz=self->mhz*1000*1000, //Clock out at DISP_SPI_MHZ MHz
@@ -166,10 +168,11 @@ STATIC void disp_spi_init(ILI9341_t *self)
 		.queue_size=1,
 		.pre_cb=NULL,
 		.post_cb=NULL,
-		.flags=SPI_DEVICE_HALFDUPLEX,
+		//.flags=SPI_DEVICE_HALFDUPLEX,
 		.duty_cycle_pos=128,
 	};
 
+#if 0	
 	gpio_pad_select_gpio(self->miso);
     gpio_pad_select_gpio(self->mosi);
     gpio_pad_select_gpio(self->clk);
@@ -185,7 +188,7 @@ STATIC void disp_spi_init(ILI9341_t *self)
 	ret=spi_bus_initialize(self->spihost, &buscfg, 1);
     if (ret != ESP_OK) nlr_raise(
         mp_obj_new_exception_msg(&mp_type_RuntimeError, "Failed initializing SPI bus"));
-
+#endif
 	//Attach the LCD to the SPI bus
 	ret=spi_bus_add_device(self->spihost, &devcfg, &self->spi);
     if (ret != ESP_OK) nlr_raise(
@@ -201,14 +204,22 @@ STATIC void disp_spi_send(ILI9341_t *self, const uint8_t * data, uint16_t length
 	t.length = length * 8;              //Length is in bytes, transaction length is in bits.
 	t.tx_buffer = data;               	//Data
 
+#if 0
 //	esp_err_t ret;
 //	ret=spi_device_transmit(spi, &t);  //Transmit!
 //	assert(ret==ESP_OK);            	 //Should have had no issues.
-
+#else	
+	esp_err_t ret;
+	ret=spi_device_transmit(self->spi, &t);
+	assert(ret==ESP_OK);
+#endif
+	
+#if 0	
 	spi_device_queue_trans(self->spi, &t, portMAX_DELAY);
 
 	spi_transaction_t * rt;
 	spi_device_get_trans_result(self->spi, &rt, portMAX_DELAY);
+#endif	
 }
 
 STATIC void ili9441_send_cmd(ILI9341_t *self, uint8_t cmd)
@@ -241,8 +252,13 @@ STATIC const lcd_init_cmd_t ili_init_cmds[]={
 		{0xC1, {0x11}, 1},			/*Power control */
 		{0xC5, {0x35, 0x3E}, 2},	/*VCOM control*/
 		{0xC7, {0xBE}, 1},			/*VCOM control*/
+#if 0
 		{0x36, {0x48}, 1},			/*Memory Access Control*/
+#else		
+        {0x36, {0x28}, 1},          /*Memory Access Control - sets Landscape format */
+#endif		
 		{0x3A, {0x55}, 1},			/*Pixel Format Set*/
+		
 		{0xB1, {0x00, 0x1B}, 2},
 		{0xF2, {0x08}, 1},
 		{0x26, {0x01}, 1},
@@ -268,15 +284,18 @@ STATIC mp_obj_t mp_init_ILI9341(mp_obj_t self_in)
 
 	//Initialize non-SPI GPIOs
 	gpio_set_direction(self->dc, GPIO_MODE_OUTPUT);
+#if 0	
 	gpio_set_direction(self->rst, GPIO_MODE_OUTPUT);
+#endif	
 	if (self->backlight != -1) gpio_set_direction(self->backlight, GPIO_MODE_OUTPUT);
 
+#if 0
 	//Reset the display
 	gpio_set_level(self->rst, 0);
 	vTaskDelay(100 / portTICK_RATE_MS);
 	gpio_set_level(self->rst, 1);
 	vTaskDelay(100 / portTICK_RATE_MS);
-
+#endif
 
 	// printf("ILI9341 initialization.\n");
 

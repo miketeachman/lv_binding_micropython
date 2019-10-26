@@ -10,6 +10,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/timers.h"
 #include "esp_log.h"
+#include "mphalport.h"
 
 static const char TAG[] = "[LVGL]";
 static TimerHandle_t xTimer = NULL;
@@ -30,7 +31,15 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_0(mp_deinit_lvesp32_obj, mp_deinit_lvesp32);
 
 STATIC mp_obj_t mp_lv_task_handler(mp_obj_t arg)
 {
+    uint32_t t0 = mp_hal_ticks_us();
     lv_task_handler();
+    uint32_t t1 = mp_hal_ticks_us();    
+    
+    uint32_t diff_us = t1-t0;
+    if (diff_us > 20000) {
+        printf("==== LVGL = %d us\n", diff_us);
+    }
+    
     return mp_const_none;
 }
 
