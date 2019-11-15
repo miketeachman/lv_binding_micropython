@@ -21,7 +21,7 @@ STATIC mp_obj_t mp_lv_task_handler(mp_obj_t arg)
     lv_task_handler();
     uint32_t t1 = mp_hal_ticks_us();    
     
-#if 1
+#if 0
     uint32_t diff_us = t1-t0;
     if (diff_us > 20000) {
         printf("==== LVGL = %d us\n", diff_us);
