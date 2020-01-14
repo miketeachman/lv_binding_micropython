@@ -150,7 +150,7 @@ STATIC void disp_spi_init(ILI9341_t *self)
 {
 	esp_err_t ret;
 
-#if 0
+#if 1
 	spi_bus_config_t buscfg={
 		.miso_io_num=self->miso,
 		.mosi_io_num=self->mosi,
@@ -168,11 +168,11 @@ STATIC void disp_spi_init(ILI9341_t *self)
 		.queue_size=1,
 		.pre_cb=NULL,
 		.post_cb=NULL,
-		//.flags=SPI_DEVICE_HALFDUPLEX,
+		.flags=SPI_DEVICE_HALFDUPLEX,
 		.duty_cycle_pos=128,
 	};
 
-#if 0	
+#if 1
 	gpio_pad_select_gpio(self->miso);
     gpio_pad_select_gpio(self->mosi);
     gpio_pad_select_gpio(self->clk);
