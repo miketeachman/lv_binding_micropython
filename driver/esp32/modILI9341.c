@@ -11,6 +11,11 @@
 #include "driver/spi_master.h"
 #include "lvgl/src/lv_hal/lv_hal_disp.h"
 
+typedef enum {
+    ILI_SPI_EXCLUSIVE,
+    ILI_SPI_SHARED,
+} spi_bus_sharing_t;
+
 //////////////////////////////////////////////////////////////////////////////
 // ILI9341 requires specific lv_conf resolution and color depth
 //////////////////////////////////////////////////////////////////////////////
@@ -33,8 +38,9 @@ typedef struct {
     uint8_t clk;
     uint8_t cs;
     uint8_t dc;
-    uint8_t rst;
-    uint8_t backlight;
+    int8_t rst;
+    int8_t backlight;
+    uint8_t share;
 
 } ILI9341_t;
 
@@ -93,6 +99,7 @@ STATIC mp_obj_t ILI9341_make_new(const mp_obj_type_t *type,
          ARG_dc,
          ARG_rst,
          ARG_backlight,
+         ARG_share
     };
 
     static const mp_arg_t allowed_args[] = {
@@ -105,6 +112,7 @@ STATIC mp_obj_t ILI9341_make_new(const mp_obj_type_t *type,
         { MP_QSTR_dc,MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int=-1}},
         { MP_QSTR_rst,MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int=-1}},
         { MP_QSTR_backlight,MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int=-1}},
+        { MP_QSTR_share,MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = ILI_SPI_EXCLUSIVE}},
     };
 
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
@@ -121,14 +129,16 @@ STATIC mp_obj_t ILI9341_make_new(const mp_obj_type_t *type,
     self->dc = args[ARG_dc].u_int;
     self->rst = args[ARG_rst].u_int;
     self->backlight = args[ARG_backlight].u_int;
+    self->share = args[ARG_share].u_int;
 
     return MP_OBJ_FROM_PTR(self);
 }
 
-
 STATIC const mp_rom_map_elem_t ILI9341_globals_table[] = {
         { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_ILI9341) },
         { MP_ROM_QSTR(MP_QSTR_display), (mp_obj_t)&ILI9341_type},
+        { MP_ROM_QSTR(MP_QSTR_EXCLUSIVE), MP_ROM_INT(ILI_SPI_EXCLUSIVE) },
+        { MP_ROM_QSTR(MP_QSTR_SHARED), MP_ROM_INT(ILI_SPI_SHARED) },
 };
          
 
@@ -148,90 +158,81 @@ const mp_obj_module_t mp_module_ILI9341 = {
 
 STATIC void disp_spi_init(ILI9341_t *self)
 {
-	esp_err_t ret;
+    esp_err_t ret;
 
-#if 1
-	spi_bus_config_t buscfg={
-		.miso_io_num=self->miso,
-		.mosi_io_num=self->mosi,
-		.sclk_io_num=self->clk,
-		.quadwp_io_num=-1,
-		.quadhd_io_num=-1,
-		.max_transfer_sz=128*1024,
-	};
-#endif	
+    if (self->share == ILI_SPI_EXCLUSIVE) {
+        spi_bus_config_t buscfg = {
+            .miso_io_num=self->miso,
+            .mosi_io_num=self->mosi,
+            .sclk_io_num=self->clk,
+            .quadwp_io_num=-1,
+            .quadhd_io_num=-1,
+            .max_transfer_sz=128*1024,
+        };
 
-	spi_device_interface_config_t devcfg={
-		.clock_speed_hz=self->mhz*1000*1000, //Clock out at DISP_SPI_MHZ MHz
-		.mode=0,                             //SPI mode 0
-		.spics_io_num=self->cs,              //CS pin
-		.queue_size=1,
-		.pre_cb=NULL,
-		.post_cb=NULL,
-		.flags=SPI_DEVICE_HALFDUPLEX,
-		.duty_cycle_pos=128,
-	};
+        gpio_pad_select_gpio(self->miso);
+        gpio_pad_select_gpio(self->mosi);
+        gpio_pad_select_gpio(self->clk);
 
-#if 1
-	gpio_pad_select_gpio(self->miso);
-    gpio_pad_select_gpio(self->mosi);
-    gpio_pad_select_gpio(self->clk);
+        gpio_set_direction(self->miso, GPIO_MODE_INPUT);
+        gpio_set_pull_mode(self->miso, GPIO_PULLUP_ONLY);
+        gpio_set_direction(self->mosi, GPIO_MODE_OUTPUT);
+        gpio_set_direction(self->clk, GPIO_MODE_OUTPUT);
 
-    gpio_set_direction(self->miso, GPIO_MODE_INPUT);
-    gpio_set_pull_mode(self->miso, GPIO_PULLUP_ONLY);
-    gpio_set_direction(self->mosi, GPIO_MODE_OUTPUT);
-    gpio_set_direction(self->clk, GPIO_MODE_OUTPUT);
+        gpio_pad_select_gpio(self->cs);
 
-    gpio_pad_select_gpio(self->cs);
+        //Initialize the SPI bus
+        ret=spi_bus_initialize(self->spihost, &buscfg, 1);
+        if (ret != ESP_OK) nlr_raise(
+            mp_obj_new_exception_msg(&mp_type_RuntimeError, "Failed initializing SPI bus"));
+    }
 
-	//Initialize the SPI bus
-	ret=spi_bus_initialize(self->spihost, &buscfg, 1);
-    if (ret != ESP_OK) nlr_raise(
-        mp_obj_new_exception_msg(&mp_type_RuntimeError, "Failed initializing SPI bus"));
-#endif
-	//Attach the LCD to the SPI bus
-	ret=spi_bus_add_device(self->spihost, &devcfg, &self->spi);
+    // Attach the LCD to the SPI bus
+    uint32_t spi_flags = 0;
+    if (self->share == ILI_SPI_EXCLUSIVE) {
+        spi_flags = SPI_DEVICE_HALFDUPLEX;
+    }
+
+    spi_device_interface_config_t devcfg = {
+        .clock_speed_hz=self->mhz*1000*1000, //Clock out at DISP_SPI_MHZ MHz
+        .mode=0,                             //SPI mode 0
+        .spics_io_num=self->cs,              //CS pin
+        .queue_size=1,
+        .pre_cb=NULL,
+        .post_cb=NULL,
+        .flags=spi_flags,
+        .duty_cycle_pos=128,
+    };
+
+    ret=spi_bus_add_device(self->spihost, &devcfg, &self->spi);
     if (ret != ESP_OK) nlr_raise(
         mp_obj_new_exception_msg(&mp_type_RuntimeError, "Failed adding SPI device"));
 }
 
 STATIC void disp_spi_send(ILI9341_t *self, const uint8_t * data, uint16_t length)
 {
-	if (length == 0) return;           //no need to send anything
+    if (length == 0) return;           //no need to send anything
 
-	spi_transaction_t t;
-    memset(&t, 0, sizeof(t));       	//Zero out the transaction
-	t.length = length * 8;              //Length is in bytes, transaction length is in bits.
-	t.tx_buffer = data;               	//Data
+    spi_transaction_t t;
+    memset(&t, 0, sizeof(t));           //Zero out the transaction
+    t.length = length * 8;              //Length is in bytes, transaction length is in bits.
+    t.tx_buffer = data;                   //Data
 
-#if 0
-//	esp_err_t ret;
-//	ret=spi_device_transmit(spi, &t);  //Transmit!
-//	assert(ret==ESP_OK);            	 //Should have had no issues.
-#else	
-	esp_err_t ret;
-	ret=spi_device_transmit(self->spi, &t);
-	assert(ret==ESP_OK);
-#endif
-	
-#if 0	
-	spi_device_queue_trans(self->spi, &t, portMAX_DELAY);
-
-	spi_transaction_t * rt;
-	spi_device_get_trans_result(self->spi, &rt, portMAX_DELAY);
-#endif	
+    esp_err_t ret;
+    ret=spi_device_transmit(self->spi, &t);
+    assert(ret==ESP_OK);
 }
 
 STATIC void ili9441_send_cmd(ILI9341_t *self, uint8_t cmd)
 {
-	gpio_set_level(self->dc, 0);	 /*Command mode*/
-	disp_spi_send(self, &cmd, 1);
+    gpio_set_level(self->dc, 0);     /*Command mode*/
+    disp_spi_send(self, &cmd, 1);
 }
 
 STATIC void ili9341_send_data(ILI9341_t *self, const void * data, uint16_t length)
 {
-	gpio_set_level(self->dc, 1);	 /*Data mode*/
-	disp_spi_send(self, data, length);
+    gpio_set_level(self->dc, 1);     /*Data mode*/
+    disp_spi_send(self, data, length);
 }
 
 /*The LCD needs a bunch of command/argument values to be initialized. They are stored in this struct. */
@@ -242,37 +243,37 @@ typedef struct {
 } lcd_init_cmd_t;
 
 STATIC const lcd_init_cmd_t ili_init_cmds[]={
-		{0xCF, {0x00, 0x83, 0X30}, 3},
-		{0xED, {0x64, 0x03, 0X12, 0X81}, 4},
-		{0xE8, {0x85, 0x01, 0x79}, 3},
-		{0xCB, {0x39, 0x2C, 0x00, 0x34, 0x02}, 5},
-		{0xF7, {0x20}, 1},
-		{0xEA, {0x00, 0x00}, 2},
-		{0xC0, {0x26}, 1},			/*Power control*/
-		{0xC1, {0x11}, 1},			/*Power control */
-		{0xC5, {0x35, 0x3E}, 2},	/*VCOM control*/
-		{0xC7, {0xBE}, 1},			/*VCOM control*/
+        {0xCF, {0x00, 0x83, 0X30}, 3},
+        {0xED, {0x64, 0x03, 0X12, 0X81}, 4},
+        {0xE8, {0x85, 0x01, 0x79}, 3},
+        {0xCB, {0x39, 0x2C, 0x00, 0x34, 0x02}, 5},
+        {0xF7, {0x20}, 1},
+        {0xEA, {0x00, 0x00}, 2},
+        {0xC0, {0x26}, 1},            /*Power control*/
+        {0xC1, {0x11}, 1},            /*Power control */
+        {0xC5, {0x35, 0x3E}, 2},    /*VCOM control*/
+        {0xC7, {0xBE}, 1},            /*VCOM control*/
 #if 0
-		{0x36, {0x48}, 1},			/*Memory Access Control*/
-#else		
+        {0x36, {0x48}, 1},            /*Memory Access Control - sets Portrait format */
+#else
         {0x36, {0x28}, 1},          /*Memory Access Control - sets Landscape format */
-#endif		
-		{0x3A, {0x55}, 1},			/*Pixel Format Set*/
-		
-		{0xB1, {0x00, 0x1B}, 2},
-		{0xF2, {0x08}, 1},
-		{0x26, {0x01}, 1},
-		{0xE0, {0x1F, 0x1A, 0x18, 0x0A, 0x0F, 0x06, 0x45, 0X87, 0x32, 0x0A, 0x07, 0x02, 0x07, 0x05, 0x00}, 15},
-		{0XE1, {0x00, 0x25, 0x27, 0x05, 0x10, 0x09, 0x3A, 0x78, 0x4D, 0x05, 0x18, 0x0D, 0x38, 0x3A, 0x1F}, 15},
-		{0x2A, {0x00, 0x00, 0x00, 0xEF}, 4},
-		{0x2B, {0x00, 0x00, 0x01, 0x3f}, 4},
-		{0x2C, {0}, 0},
-		{0xB7, {0x07}, 1},
-		{0xB6, {0x0A, 0x82, 0x27, 0x00}, 4},
-		{0x11, {0}, 0x80},
-		{0x29, {0}, 0x80},
-		{0, {0}, 0xff},
-	};
+#endif
+        {0x3A, {0x55}, 1},            /*Pixel Format Set*/
+
+        {0xB1, {0x00, 0x1B}, 2},
+        {0xF2, {0x08}, 1},
+        {0x26, {0x01}, 1},
+        {0xE0, {0x1F, 0x1A, 0x18, 0x0A, 0x0F, 0x06, 0x45, 0X87, 0x32, 0x0A, 0x07, 0x02, 0x07, 0x05, 0x00}, 15},
+        {0XE1, {0x00, 0x25, 0x27, 0x05, 0x10, 0x09, 0x3A, 0x78, 0x4D, 0x05, 0x18, 0x0D, 0x38, 0x3A, 0x1F}, 15},
+        {0x2A, {0x00, 0x00, 0x00, 0xEF}, 4},
+        {0x2B, {0x00, 0x00, 0x01, 0x3f}, 4},
+        {0x2C, {0}, 0},
+        {0xB7, {0x07}, 1},
+        {0xB6, {0x0A, 0x82, 0x27, 0x00}, 4},
+        {0x11, {0}, 0x80},
+        {0x29, {0}, 0x80},
+        {0, {0}, 0xff},
+    };
 
 STATIC mp_obj_t mp_init_ILI9341(mp_obj_t self_in)
 {
@@ -280,93 +281,79 @@ STATIC mp_obj_t mp_init_ILI9341(mp_obj_t self_in)
     mp_activate_ILI9341(self_in);
 
     disp_spi_init(self);
+
+    // Initialize non-SPI GPIOs
     gpio_pad_select_gpio(self->dc);
+    gpio_set_direction(self->dc, GPIO_MODE_OUTPUT);
 
-	//Initialize non-SPI GPIOs
-	gpio_set_direction(self->dc, GPIO_MODE_OUTPUT);
-#if 0	
-	gpio_set_direction(self->rst, GPIO_MODE_OUTPUT);
-#endif	
-	if (self->backlight != -1) gpio_set_direction(self->backlight, GPIO_MODE_OUTPUT);
+    if (self->backlight != -1) {
+        gpio_pad_select_gpio(self->backlight);
+        gpio_set_direction(self->backlight, GPIO_MODE_OUTPUT);
+    }
 
-#if 0
-	//Reset the display
-	gpio_set_level(self->rst, 0);
-	vTaskDelay(100 / portTICK_RATE_MS);
-	gpio_set_level(self->rst, 1);
-	vTaskDelay(100 / portTICK_RATE_MS);
-#endif
+    if (self->rst != -1) {
+        gpio_set_direction(self->rst, GPIO_MODE_OUTPUT);
+        // Reset the display
+        gpio_set_level(self->rst, 0);
+        vTaskDelay(100 / portTICK_RATE_MS);
+        gpio_set_level(self->rst, 1);
+        vTaskDelay(100 / portTICK_RATE_MS);
+    }
 
-	// printf("ILI9341 initialization.\n");
+    // Send all the commands
+    uint16_t cmd = 0;
+    while (ili_init_cmds[cmd].databytes!=0xff) {
+        ili9441_send_cmd(self, ili_init_cmds[cmd].cmd);
+        ili9341_send_data(self, ili_init_cmds[cmd].data, ili_init_cmds[cmd].databytes & 0x1F);
+        if (ili_init_cmds[cmd].databytes & 0x80) {
+            vTaskDelay(100 / portTICK_RATE_MS);
+        }
+        cmd++;
+    }
 
-
-	//Send all the commands
-	uint16_t cmd = 0;
-	while (ili_init_cmds[cmd].databytes!=0xff) {
-		ili9441_send_cmd(self, ili_init_cmds[cmd].cmd);
-		ili9341_send_data(self, ili_init_cmds[cmd].data, ili_init_cmds[cmd].databytes & 0x1F);
-		if (ili_init_cmds[cmd].databytes & 0x80) {
-			vTaskDelay(100 / portTICK_RATE_MS);
-		}
-		cmd++;
-	}
-
-	///Enable backlight
-	//printf("Enable backlight.\n");
-	if (self->backlight != -1) gpio_set_level(self->backlight, 1);       
+    // Enable backlight
+    if (self->backlight != -1) gpio_set_level(self->backlight, 1);
     return mp_const_none;
 }
 
 
 STATIC void ili9431_flush(struct _disp_drv_t * disp_drv, const lv_area_t * area, lv_color_t * color_p)
 {
-	uint8_t data[4];
+    uint8_t data[4];
 
     ILI9341_t *self = g_ILI9341;
 
-	/*Column addresses*/
-	ili9441_send_cmd(self, 0x2A);
-	data[0] = (area->x1 >> 8) & 0xFF;
-	data[1] = area->x1 & 0xFF;
-	data[2] = (area->x2 >> 8) & 0xFF;
-	data[3] = area->x2 & 0xFF;
-	ili9341_send_data(self, data, 4);
+    /*Column addresses*/
+    ili9441_send_cmd(self, 0x2A);
+    data[0] = (area->x1 >> 8) & 0xFF;
+    data[1] = area->x1 & 0xFF;
+    data[2] = (area->x2 >> 8) & 0xFF;
+    data[3] = area->x2 & 0xFF;
+    ili9341_send_data(self, data, 4);
 
-	/*Page addresses*/
-	ili9441_send_cmd(self, 0x2B);
-	data[0] = (area->y1 >> 8) & 0xFF;
-	data[1] = area->y1 & 0xFF;
-	data[2] = (area->y2 >> 8) & 0xFF;
-	data[3] = area->y2 & 0xFF;
-	ili9341_send_data(self, data, 4);
+    /*Page addresses*/
+    ili9441_send_cmd(self, 0x2B);
+    data[0] = (area->y1 >> 8) & 0xFF;
+    data[1] = area->y1 & 0xFF;
+    data[2] = (area->y2 >> 8) & 0xFF;
+    data[3] = area->y2 & 0xFF;
+    ili9341_send_data(self, data, 4);
 
-	/*Memory write*/
-	ili9441_send_cmd(self, 0x2C);
+    /*Memory write*/
+    ili9441_send_cmd(self, 0x2C);
 
-	uint32_t size = (area->x2 - area->x1 + 1) * (area->y2 - area->y1 + 1);
+    uint32_t size = (area->x2 - area->x1 + 1) * (area->y2 - area->y1 + 1);
 
-	/*Byte swapping is required*/
-	uint32_t i;
-	uint8_t * color_u8 = (uint8_t *) color_p;
-	uint8_t color_tmp;
-	for(i = 0; i < size * 2; i += 2) {
-		color_tmp = color_u8[i + 1];
-		color_u8[i + 1] = color_u8[i];
-		color_u8[i] = color_tmp;
-	}
+    /*Byte swapping is required*/
+    uint32_t i;
+    uint8_t * color_u8 = (uint8_t *) color_p;
+    uint8_t color_tmp;
+    for(i = 0; i < size * 2; i += 2) {
+        color_tmp = color_u8[i + 1];
+        color_u8[i + 1] = color_u8[i];
+        color_u8[i] = color_tmp;
+    }
 
-	ili9341_send_data(self, (void*)color_p, size * 2);
-
-	/*
-	while(size > LV_HOR_RES) {
-
-		ili9341_send_data((void*)color_p, LV_HOR_RES * 2);
-		//vTaskDelay(10 / portTICK_PERIOD_MS);
-		size -= LV_HOR_RES;
-		color_p += LV_HOR_RES;
-	}
-
-	ili9341_send_data((void*)color_p, size * 2);	*/ /*Send the remaining data*/
-
-	lv_disp_flush_ready(disp_drv);
+    ili9341_send_data(self, (void*)color_p, size * 2);
+    lv_disp_flush_ready(disp_drv);
 }
