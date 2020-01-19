@@ -15,13 +15,19 @@
 static const char TAG[] = "[LVGL]";
 static TimerHandle_t xTimer;
 
+#define PERFORMANCE_TEST 0
+
 STATIC mp_obj_t mp_lv_task_handler(mp_obj_t arg)
 {
+#if PERFORMANCE_TEST == 1
     uint32_t t0 = mp_hal_ticks_us();
+#endif
     lv_task_handler();
+#if PERFORMANCE_TEST == 1
     uint32_t t1 = mp_hal_ticks_us();    
+#endif
     
-#if 0
+#if PERFORMANCE_TEST == 1
     uint32_t diff_us = t1-t0;
     if (diff_us > 20000) {
         printf("==== LVGL = %d us\n", diff_us);
