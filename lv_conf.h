@@ -333,6 +333,11 @@ typedef void * lv_indev_drv_user_data_t;            /*Type of user data in the i
  *                                LV_FONT_DECLARE(my_font_2)
  */
 #ifndef LV_FONT_CUSTOM_DECLARE
+#define LV_FONT_CUSTOM_DECLARE LV_FONT_DECLARE(lv_font_seven_segment_80) \
+                               LV_FONT_DECLARE(lv_font_seven_segment_100)
+#endif // LV_FONT_CUSTOM_DECLARE
+
+/*
 #define LV_FONT_CUSTOM_DECLARE LV_FONT_DECLARE(lv_font_roboto_mono_40) \
                                LV_FONT_DECLARE(lv_font_roboto_mono_50) \
                                LV_FONT_DECLARE(lv_font_roboto_mono_60) \
@@ -340,7 +345,7 @@ typedef void * lv_indev_drv_user_data_t;            /*Type of user data in the i
                                LV_FONT_DECLARE(lv_font_seven_segment_80) \
                                LV_FONT_DECLARE(lv_font_seven_segment_100) \
                                LV_FONT_DECLARE(lv_font_roboto_120)
-#endif // LV_FONT_CUSTOM_DECLARE
+*/
 
 /*Always set a default font from the built-in fonts*/
 #ifndef LV_FONT_DEFAULT
